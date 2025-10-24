@@ -13,6 +13,7 @@
   - [verify](#verify)
   - [show-cert](#show-cert)
   - [export-cert](#export-cert)
+  - [sign-tool](#sign-tool)
 - [Global Options](#global-options)
 - [Examples](#examples)
 - [File Formats](#file-formats)
