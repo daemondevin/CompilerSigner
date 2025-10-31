@@ -1,6 +1,6 @@
 # CompilerSigner — Code Signing Utility
 
-`CompilerSigner` is a code-signing utility for developers who need to sign executables, DLLs, or installers using either **X.509 certificates using RSA cryptography**, **OpenSSL PKCS#12 certificates** or **Microsoft’s SignTool.exe**.
+`CompilerSigner` is a command-line utility which give developers the ability to code-sign executables, DLLs, or installers using either **X.509 certificates using RSA cryptography**, **OpenSSL PKCS#12 certificates** or **Microsoft’s SignTool.exe**. It also allows for generating RSA key pairs, root certificates (CA), certificate chains, and self-signed X.509 certificates.
 
 ## Table of Contents
 
@@ -9,6 +9,8 @@
 - [Commands](#commands)
   - [generate-keys](#generate-keys)
   - [generate-cert](#generate-cert)
+  - [generate-root-ca](#generate-root-ca)
+  - [generate-signed-cert](#generate-signed-cert)
   - [sign](#sign)
   - [verify](#verify)
   - [show-cert](#show-cert)
@@ -63,26 +65,50 @@ which = "6.0"
 anyhow = "1.0"
 ```
 
-## Quick Start
-
-```bash
-# 1. Generate RSA key pair
-CompilerSigner generate-keys
-
-# 2. Generate a self-signed certificate
-CompilerSigner generate-cert --cn "Your Name" --org "Your Company" --country US
-
-# 3. Sign a file with the certificate
-CompilerSigner sign myprogram.exe --with-cert
-
-# 4. Verify the signature
-CompilerSigner verify myprogram.exe
-```
-
 ## Usage Overview
 
 ```bash
 CompilerSigner <COMMAND> [OPTIONS]
+```
+
+## Quick Start
+
+### Self-Signed Certificate (Simple)
+
+```bash
+# 1. Generate RSA key pair
+codesign generate-keys
+
+# 2. Generate a self-signed certificate
+codesign generate-cert --cn "Your Name" --org "Your Company" --country US
+
+# 3. Sign a file with the certificate
+codesign sign myprogram.exe --with-cert
+
+# 4. Verify the signature
+codesign verify myprogram.exe
+```
+
+### Root CA with Signed Certificates (Advanced)
+
+```bash
+# 1. Generate a Root CA
+codesign generate-root-ca --cn "My Root CA" --org "My Company" --country US
+
+# 2. Generate keys for code signing
+codesign generate-keys
+
+# 3. Generate a certificate signed by your CA
+codesign generate-signed-cert \
+  --cn "Code Signing Cert" \
+  --ca-cert keys/ca_certificate.pem \
+  --ca-key keys/ca_private_key.pem
+
+# 4. Sign files with your CA-signed certificate
+codesign sign myprogram.exe --with-cert
+
+# 5. Verify signatures
+codesign verify myprogram.exe
 ```
 
 ### Commands
@@ -130,6 +156,129 @@ CompilerSigner generate-keys --bits 4096
 
 # Generate keys in a custom directory
 CompilerSigner generate-keys --key-dir /secure/location
+```
+
+---
+
+### generate-root-ca
+
+Generate a Root Certificate Authority (CA) certificate that can be used to sign other certificates.
+
+**Usage:**
+```bash
+codesign generate-root-ca --cn <NAME> [OPTIONS]
+```
+
+**Required Options:**
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `--cn <NAME>` | string | Common Name for the CA (e.g., "My Root CA") |
+
+**Optional Arguments:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--org <ORG>` | string | - | Organization name |
+| `--country <CODE>` | string | - | Two-letter country code (e.g., US, UK, CA) |
+| `--days <DAYS>` | integer | 3650 | Certificate validity period in days (10 years default) |
+| `--format <FORMAT>` | string | pem | Output format: `pem`, `der`, or `cer` |
+| `--key-dir <PATH>` | string | keys | Directory to store CA files |
+
+**Output Files:**
+- `keys/ca_certificate.pem` (or `.der`/`.cer` depending on format) - CA certificate
+- `keys/ca_private_key.pem` - CA private key (4096-bit, keep extremely secure!)
+
+**Important Notes:**
+- Root CA certificates use 4096-bit keys for maximum security
+- The CA private key can sign other certificates - protect it carefully
+- Root CAs typically have long validity periods (10+ years)
+- You can install the CA certificate in your system's trust store
+
+**Examples:**
+
+```bash
+# Basic Root CA
+codesign generate-root-ca --cn "My Root CA"
+
+# Root CA with full details
+codesign generate-root-ca \
+  --cn "Acme Corporation Root CA" \
+  --org "Acme Corporation" \
+  --country US \
+  --days 7300
+
+# Generate Root CA in CER format
+codesign generate-root-ca --cn "My Root CA" --format cer
+
+# Root CA valid for 20 years
+codesign generate-root-ca --cn "My Root CA" --days 7300
+```
+
+### generate-signed-cert
+
+Generate a certificate signed by your Root CA. This creates a proper certificate chain.
+
+**Usage:**
+```bash
+codesign generate-signed-cert --cn <NAME> --ca-cert <PATH> --ca-key <PATH> [OPTIONS]
+```
+
+**Required Options:**
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `--cn <NAME>` | string | Common Name for the certificate (e.g., "Code Signing Certificate") |
+| `--ca-cert <PATH>` | path | Path to CA certificate file |
+| `--ca-key <PATH>` | path | Path to CA private key file |
+
+**Optional Arguments:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--org <ORG>` | string | - | Organization name |
+| `--country <CODE>` | string | - | Two-letter country code |
+| `--days <DAYS>` | integer | 365 | Certificate validity period in days |
+| `--format <FORMAT>` | string | pem | Output format: `pem`, `der`, or `cer` |
+| `--key-dir <PATH>` | string | keys | Directory containing keys and output |
+
+**Prerequisites:**
+- Must have generated keys with `generate-keys` first
+- Must have a Root CA certificate and key
+
+**Output Files:**
+- `keys/certificate.pem` (or `.der`/`.cer`) - Your signed certificate
+
+**Examples:**
+
+```bash
+# Generate certificate signed by CA
+codesign generate-signed-cert \
+  --cn "Code Signing Certificate" \
+  --ca-cert keys/ca_certificate.pem \
+  --ca-key keys/ca_private_key.pem
+
+# Certificate with full details
+codesign generate-signed-cert \
+  --cn "John Doe Code Signing" \
+  --org "Acme Corporation" \
+  --country US \
+  --days 730 \
+  --ca-cert keys/ca_certificate.pem \
+  --ca-key keys/ca_private_key.pem
+
+# Generate in CER format
+codesign generate-signed-cert \
+  --cn "Code Signing Cert" \
+  --ca-cert keys/ca_certificate.pem \
+  --ca-key keys/ca_private_key.pem \
+  --format cer
+
+# Use CA from different location
+codesign generate-signed-cert \
+  --cn "Dev Signing Cert" \
+  --ca-cert /secure/company-ca.pem \
+  --ca-key /secure/company-ca-key.pem
 ```
 
 ---
@@ -419,7 +568,7 @@ CompilerSigner generate-cert --help
 
 ## Examples
 
-### Complete Workflow
+### Complete Workflow - Self-Signed
 
 ```bash
 # Step 1: Generate keys
@@ -446,8 +595,81 @@ CompilerSigner verify installer.msi
 CompilerSigner show-cert
 ```
 
+### Complete Workflow - Root CA
+
+```bash
+# Step 1: Create Root CA (do this once, keep CA key secure!)
+CompilerSigner generate-root-ca \
+  --cn "Acme Corporation Root CA" \
+  --org "Acme Corporation" \
+  --country US \
+  --days 7300
+
+# Step 2: Generate signing keys
+CompilerSigner generate-keys --bits 2048
+
+# Step 3: Create CA-signed certificate
+CompilerSigner generate-signed-cert \
+  --cn "Acme Code Signing Certificate" \
+  --org "Acme Corporation" \
+  --country US \
+  --ca-cert keys/ca_certificate.pem \
+  --ca-key keys/ca_private_key.pem
+
+# Step 4: Sign programs with CA-signed certificate
+CompilerSigner sign myapp.exe --with-cert
+
+# Step 5: Verify (works the same way)
+CompilerSigner verify myapp.exe
+
+# Step 6: View certificate chain
+CompilerSigner show-cert
+CompilerSigner show-cert --cert keys/ca_certificate.pem
+```
+
+### Multiple Signing Certificates from One CA
+
+```bash
+# Create Root CA once
+CompilerSigner generate-root-ca --cn "Company Root CA" --org "My Company"
+
+# Create different certificates for different purposes
+# Developer 1
+CompilerSigner --key-dir keys/dev1 generate-keys
+CompilerSigner --key-dir keys/dev1 generate-signed-cert \
+  --cn "Developer 1" \
+  --ca-cert keys/ca_certificate.pem \
+  --ca-key keys/ca_private_key.pem
+
+# Developer 2
+CompilerSigner --key-dir keys/dev2 generate-keys
+CompilerSigner --key-dir keys/dev2 generate-signed-cert \
+  --cn "Developer 2" \
+  --ca-cert keys/ca_certificate.pem \
+  --ca-key keys/ca_private_key.pem
+
+# Each developer signs with their own certificate
+CompilerSigner --key-dir keys/dev1 sign app1.exe --with-cert
+CompilerSigner --key-dir keys/dev2 sign app2.exe --with-cert
+```
+
+### Multiple Certificates
+
+```bash
+# Generate different certificates for different purposes
+CompilerSigner generate-cert --cn "Personal Projects" --format cer
+mv keys/certificate.cer keys/personal.cer
+
+CompilerSigner generate-cert --cn "Company Name" --format cer
+mv keys/certificate.cer keys/company.cer
+
+# Sign with different certificates
+CompilerSigner sign personal-app.exe --with-cert --cert keys/personal.cer
+CompilerSigner sign company-app.exe --with-cert --cert keys/company.cer
+```
+
 ### Batch Signing
-Batch:
+Windows:
 ```batch
 @echo off
 REM Sign all executables and DLLs in the current directory
@@ -464,8 +686,20 @@ echo All files have been processed.
 pause
 ```
 
+Linux/macOS:
+```bash
+#!/bin/bash
+# Sign all executables in a directory
+
+for file in *.exe *.dll; do
+  if [ -f "$file" ]; then
+    echo "Signing $file..."
+    CompilerSigner sign "$file" --with-cert
+  fi
+done
+```
 ### Verify All Files
-Windows Batch:
+Windows:
 ```batch
 @echo off
 REM Verify all signed files in the current directory
@@ -484,6 +718,22 @@ for %%f in (*.sig) do (
 echo.
 echo All files have been processed.
 pause
+```
+
+Linux/macOS:
+```bash
+#!/bin/bash
+# Verify all signed files
+
+for sigfile in *.sig; do
+  file="${sigfile%.sig}"
+  echo "Verifying $file..."
+  if CompilerSigner verify "$file"; then
+    echo "✓ $file is valid"
+  else
+    echo "✗ $file verification failed"
+  fi
+done
 ```
 
 ---
@@ -525,19 +775,34 @@ Signature files (`.sig`) are JSON format containing:
 
 1. **Protect Private Keys**
    - Never share your `private_key.pem`
+   - **CRITICAL**: Never share `ca_private_key.pem` - this can sign new certificates!
    - Store in a secure location with restricted permissions
    - Consider using encrypted storage
    - Back up to secure offline storage
 
-2. **Key Size**
-   - Use at least 2048-bit keys (default)
+2. **CA Key Security**
+   - Root CA private keys should be kept offline when not in use
+   - Consider storing CA keys on encrypted USB drives or hardware security modules
+   - Limit access to CA keys to authorized personnel only
+   - Keep detailed audit logs of CA key usage
+
+3. **Key Size**
+   - Use at least 2048-bit keys for certificates (default)
+   - Root CAs automatically use 4096-bit keys
    - Consider 4096-bit for long-term security
    - Larger keys provide more security but slower signing
 
 3. **Certificate Validity**
-   - Don't make certificates valid for too long (1-2 years recommended)
+   - Don't make end-entity certificates valid for too long (1-2 years recommended)
+   - Root CA certificates can be valid for 10+ years
    - Renew certificates regularly
    - Keep track of expiration dates
+
+4. **Certificate Hierarchies**
+   - Use Root CAs for organizational certificate management
+   - Create separate signing certificates for different teams/purposes
+   - All certificates signed by your CA can be traced back to it
+   - Revoke and reissue certificates if compromised
 
 ### Signing Process
 
@@ -554,6 +819,39 @@ Signature files (`.sig`) are JSON format containing:
 3. **Keep signature files with binaries**
    - Distribute `.sig` files alongside your programs
    - Users can verify authenticity
+
+### File Permissions
+
+```bash
+# Linux/macOS: Restrict key directory access
+chmod 700 keys/
+chmod 600 keys/private_key.pem
+chmod 600 keys/ca_private_key.pem  # Extra critical!
+chmod 644 keys/public_key.pem
+chmod 644 keys/certificate.pem
+chmod 644 keys/ca_certificate.pem
+```
+
+### Installing Root CA in System Trust Store
+
+**Windows:**
+```powershell
+# Import CA certificate to Trusted Root Certification Authorities
+certutil -addstore -f "ROOT" keys\ca_certificate.cer
+```
+
+**macOS:**
+```bash
+# Import CA certificate to System Keychain
+sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain keys/ca_certificate.pem
+```
+
+**Linux (Ubuntu/Debian):**
+```bash
+# Copy CA certificate to trusted certificates
+sudo cp keys/ca_certificate.pem /usr/local/share/ca-certificates/my-root-ca.crt
+sudo update-ca-certificates
+```
 
 ### Verification
 
