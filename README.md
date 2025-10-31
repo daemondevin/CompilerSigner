@@ -77,38 +77,38 @@ CompilerSigner <COMMAND> [OPTIONS]
 
 ```bash
 # 1. Generate RSA key pair
-codesign generate-keys
+CompilerSigner generate-keys
 
 # 2. Generate a self-signed certificate
-codesign generate-cert --cn "Your Name" --org "Your Company" --country US
+CompilerSigner generate-cert --cn "Your Name" --org "Your Company" --country US
 
 # 3. Sign a file with the certificate
-codesign sign myprogram.exe --with-cert
+CompilerSigner sign myprogram.exe --with-cert
 
 # 4. Verify the signature
-codesign verify myprogram.exe
+CompilerSigner verify myprogram.exe
 ```
 
 ### Root CA with Signed Certificates (Advanced)
 
 ```bash
 # 1. Generate a Root CA
-codesign generate-root-ca --cn "My Root CA" --org "My Company" --country US
+CompilerSigner generate-root-ca --cn "My Root CA" --org "My Company" --country US
 
 # 2. Generate keys for code signing
-codesign generate-keys
+CompilerSigner generate-keys
 
 # 3. Generate a certificate signed by your CA
-codesign generate-signed-cert \
+CompilerSigner generate-signed-cert \
   --cn "Code Signing Cert" \
   --ca-cert keys/ca_certificate.pem \
   --ca-key keys/ca_private_key.pem
 
 # 4. Sign files with your CA-signed certificate
-codesign sign myprogram.exe --with-cert
+CompilerSigner sign myprogram.exe --with-cert
 
 # 5. Verify signatures
-codesign verify myprogram.exe
+CompilerSigner verify myprogram.exe
 ```
 
 ### Commands
