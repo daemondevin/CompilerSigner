@@ -1,5 +1,4 @@
-﻿// Code Signing Utility with Certificate Support + PKCS#12 export/import (OpenSSL) + SignTool wrapper
-// Add the openssl crate to Cargo.toml with the "pkcs12" feature as shown above.
+// Code Signing Utility with Certificate Support + PKCS#12 export/import (OpenSSL) + SignTool wrapper
 
 use base64::{engine::general_purpose, Engine as _};
 use chrono::{Duration, Utc, DateTime};
@@ -74,6 +73,48 @@ enum Commands {
         /// Password for PFX format (required if format is pfx)
         #[arg(long)]
         password: Option<String>,
+    },
+    /// Generate a Root CA (self-signed CA)
+    GenerateRootCa {
+        /// Common Name
+        #[arg(long)]
+        cn: String,
+        /// Organization
+        #[arg(long)]
+        org: Option<String>,
+        /// Country (2-letter code)
+        #[arg(long)]
+        country: Option<String>,
+        /// Days until expiration
+        #[arg(long, default_value_t = 3650)]
+        days: i64,
+        /// Output format: pem, der, or cer
+        #[arg(long, default_value = "pem")]
+        format: String,
+    },
+    /// Generate a certificate signed by a CA
+    GenerateSignedCert {
+        /// Common Name
+        #[arg(long)]
+        cn: String,
+        /// Organization
+        #[arg(long)]
+        org: Option<String>,
+        /// Country (2-letter code)
+        #[arg(long)]
+        country: Option<String>,
+        /// Days until expiration
+        #[arg(long, default_value_t = 365)]
+        days: i64,
+        /// CA certificate path
+        #[arg(long)]
+        ca_cert: PathBuf,
+        /// CA private key path
+        #[arg(long)]
+        ca_key: PathBuf,
+        /// Output format: pem, der, or cer
+        #[arg(long, default_value = "pem")]
+        format: String,
     },
     /// Sign a file with certificate
     Sign {
@@ -159,7 +200,6 @@ enum Commands {
         #[arg(long)]
         dual: bool,
     },
-
 }
 
 #[derive(Serialize, Deserialize)]
@@ -188,20 +228,26 @@ struct CodeSigner {
     key_dir: PathBuf,
     private_key_path: PathBuf,
     public_key_path: PathBuf,
-    cert_path: PathBuf, // default certificate path (certificate.pem)
+    cert_path: PathBuf,     // default certificate path (certificate.pem)
+    ca_cert_path: PathBuf,  // CA certificate path (ca_certificate.pem)
+    ca_key_path: PathBuf,   // CA private key path (ca_private_key.pem)
 }
 
 impl CodeSigner {
     fn new(key_dir: PathBuf) -> Self {
         let private_key_path = key_dir.join("private_key.pem");
         let public_key_path = key_dir.join("public_key.pem");
-        let cert_path = key_dir.join("certificate.pem"); // default; we also accept .crt/.cer
+        let cert_path = key_dir.join("certificate.pem");
+        let ca_cert_path = key_dir.join("ca_certificate.pem");
+        let ca_key_path = key_dir.join("ca_private_key.pem");
 
         Self {
             key_dir,
             private_key_path,
             public_key_path,
             cert_path,
+            ca_cert_path,
+            ca_key_path,
         }
     }
 
@@ -231,6 +277,216 @@ impl CodeSigner {
         println!("✓ Keys generated successfully");
         println!("  Private key: {}", self.private_key_path.display());
         println!("  Public key: {}", self.public_key_path.display());
+
+        Ok(())
+    }
+
+    fn generate_root_ca(
+        &self,
+        cn: &str,
+        org: Option<&str>,
+        country: Option<&str>,
+        days: i64,
+        format: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Generate new key pair for CA
+        println!("Generating Root CA key pair...");
+        
+        let mut rng = rand::thread_rng();
+        let ca_private_key = RsaPrivateKey::new(&mut rng, 4096)?;
+        let ca_public_key = RsaPublicKey::from(&ca_private_key);
+
+        // Save CA keys
+        ca_private_key.write_pkcs8_pem_file(&self.ca_key_path, LineEnding::LF)?;
+        println!("  CA Private key: {}", self.ca_key_path.display());
+
+        // Build subject/issuer name
+        let mut subject_parts = vec![format!("CN={}", cn)];
+        if let Some(o) = org {
+            subject_parts.push(format!("O={}", o));
+        }
+        if let Some(c) = country {
+            subject_parts.push(format!("C={}", c));
+        }
+        let subject_str = subject_parts.join(",");
+        let subject = Name::from_str(&subject_str)?;
+
+        // Generate serial number
+        let serial_num: u64 = rand::random();
+        let serial = SerialNumber::from(serial_num);
+
+        // Set validity period
+        let not_before = Utc::now();
+        let not_after = not_before + Duration::days(days);
+        let validity = Validity::from_now(std::time::Duration::from_secs((days * 86400) as u64))?;
+
+        // Convert public key to SPKI
+        let spki = SubjectPublicKeyInfoOwned::from_key(ca_public_key)?;
+
+        // Create signing key
+        let signing_key = rsa::pkcs1v15::SigningKey::<Sha256>::new(ca_private_key);
+
+        // Build CA certificate with proper extensions
+        let mut builder = CertificateBuilder::new(
+            Profile::Root,
+            serial,
+            validity,
+            subject.clone(),
+            spki,
+            &signing_key,
+        )?;
+
+        let cert = builder.build::<rsa::pkcs1v15::Signature>()?;
+
+        // Save certificate based on format
+        let output_path = match format.to_lowercase().as_str() {
+            "pem" => {
+                let cert_der = cert.to_der()?;
+                let cert_pem = format!(
+                    "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+                    general_purpose::STANDARD.encode(&cert_der)
+                );
+                fs::write(&self.ca_cert_path, cert_pem)?;
+                self.ca_cert_path.clone()
+            }
+            "der" | "cer" => {
+                let cert_der = cert.to_der()?;
+                let cert_path = if format == "cer" {
+                    self.key_dir.join("ca_certificate.cer")
+                } else {
+                    self.key_dir.join("ca_certificate.der")
+                };
+                fs::write(&cert_path, cert_der)?;
+                cert_path
+            }
+            _ => {
+                eprintln!("Error: Unsupported format '{}'. Use: pem, der, or cer", format);
+                process::exit(1);
+            }
+        };
+
+        println!("✓ Root CA certificate generated successfully");
+        println!("  Certificate: {}", output_path.display());
+        println!("  Subject: {}", subject_str);
+        println!("  Valid from: {}", not_before.format("%Y-%m-%d %H:%M:%S UTC"));
+        println!("  Valid to: {}", not_after.format("%Y-%m-%d %H:%M:%S UTC"));
+        println!();
+        println!("⚠ IMPORTANT: Keep ca_private_key.pem extremely secure!");
+        println!("  This key can sign certificates and should be protected.");
+
+        Ok(())
+    }
+
+    fn generate_signed_certificate(
+        &self,
+        cn: &str,
+        org: Option<&str>,
+        country: Option<&str>,
+        days: i64,
+        ca_cert_path: &Path,
+        ca_key_path: &Path,
+        format: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if !self.private_key_path.exists() {
+            eprintln!("Error: Private key not found. Generate keys first with: generate-keys");
+            process::exit(1);
+        }
+
+        if !ca_cert_path.exists() {
+            eprintln!("Error: CA certificate not found at {}", ca_cert_path.display());
+            process::exit(1);
+        }
+
+        if !ca_key_path.exists() {
+            eprintln!("Error: CA private key not found at {}", ca_key_path.display());
+            process::exit(1);
+        }
+
+        println!("Generating CA-signed certificate...");
+
+        // Load CA certificate and key
+        let ca_cert = self.load_certificate_from_path(ca_cert_path)?;
+        let ca_private_key = RsaPrivateKey::read_pkcs8_pem_file(ca_key_path)?;
+
+        // Load subject's public key
+        let private_key = self.load_private_key()?;
+        let public_key = RsaPublicKey::from(&private_key);
+
+        // Build subject name
+        let mut subject_parts = vec![format!("CN={}", cn)];
+        if let Some(o) = org {
+            subject_parts.push(format!("O={}", o));
+        }
+        if let Some(c) = country {
+            subject_parts.push(format!("C={}", c));
+        }
+        let subject_str = subject_parts.join(",");
+        let subject = Name::from_str(&subject_str)?;
+
+        // Generate serial number
+        let serial_num: u64 = rand::random();
+        let serial = SerialNumber::from(serial_num);
+
+        // Set validity period
+        let not_before = Utc::now();
+        let not_after = not_before + Duration::days(days);
+        let validity = Validity::from_now(std::time::Duration::from_secs((days * 86400) as u64))?;
+
+        // Convert public key to SPKI
+        let spki = SubjectPublicKeyInfoOwned::from_key(public_key)?;
+
+        // Create CA signing key
+        let ca_signing_key = rsa::pkcs1v15::SigningKey::<Sha256>::new(ca_private_key);
+
+        // Build certificate signed by CA
+        let mut builder = CertificateBuilder::new(
+            Profile::Leaf {
+                issuer: ca_cert.tbs_certificate.subject.clone(),
+                enable_key_agreement: false,
+                enable_key_encipherment: false,
+            },
+            serial,
+            validity,
+            subject.clone(),
+            spki,
+            &ca_signing_key,
+        )?;
+
+        let cert = builder.build::<rsa::pkcs1v15::Signature>()?;
+
+        // Save certificate based on format
+        let output_path = match format.to_lowercase().as_str() {
+            "pem" => {
+                let cert_der = cert.to_der()?;
+                let cert_pem = format!(
+                    "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+                    general_purpose::STANDARD.encode(&cert_der)
+                );
+                fs::write(&self.cert_path, cert_pem)?;
+                self.cert_path.clone()
+            }
+            "der" | "cer" => {
+                let cert_der = cert.to_der()?;
+                let cert_path = if format == "cer" {
+                    self.key_dir.join("certificate.cer")
+                } else {
+                    self.key_dir.join("certificate.der")
+                };
+                fs::write(&cert_path, cert_der)?;
+                cert_path
+            }
+            _ => {
+                eprintln!("Error: Unsupported format '{}'. Use: pem, der, or cer", format);
+                process::exit(1);
+            }
+        };
+
+        println!("✓ Certificate generated and signed by CA");
+        println!("  Certificate: {}", output_path.display());
+        println!("  Subject: {}", subject_str);
+        println!("  Issuer: {}", ca_cert.tbs_certificate.subject);
+        println!("  Valid from: {}", not_before.format("%Y-%m-%d %H:%M:%S UTC"));
+        println!("  Valid to: {}", not_after.format("%Y-%m-%d %H:%M:%S UTC"));
 
         Ok(())
     }
@@ -974,16 +1230,22 @@ fn main() {
         Commands::GenerateCert { cn, org, country, days, format, password } => {
             signer.generate_certificate(&cn, org.as_deref(), country.as_deref(), days, &format, password.as_deref())
         }
+        Commands::GenerateRootCa { cn, org, country, days, format } => {
+            signer.generate_root_ca(&cn, org.as_deref(), country.as_deref(), days, &format)
+        }
+        Commands::GenerateSignedCert { cn, org, country, days, ca_cert, ca_key, format } => {
+            signer.generate_signed_certificate(&cn, org.as_deref(), country.as_deref(), days, &ca_cert, &ca_key, &format)
+        }
         Commands::Sign { file, with_cert, cert, hash, use_signtool, pfx, pfx_password, timestamp_url, timestamp_digest } => {
             signer.sign_file(&file, with_cert, cert.as_deref(), &hash, use_signtool, pfx.as_deref(), pfx_password.as_deref(), timestamp_url.as_deref(), &timestamp_digest)
-        }
-        Commands::SignTool { file, signtool, cert, password, timestamp, hash, dual } => {
-            signer.sign_with_signtool(&file, signtool.as_deref(), &cert, &password, timestamp.as_deref(), &hash, dual)
         }
         Commands::Verify { file, hash } => signer.verify_file(&file, &hash).map(|_| ()),
         Commands::ShowCert { cert } => signer.show_certificate(cert.as_deref()),
         Commands::ExportCert { format, output, password } => {
             signer.export_certificate(&format, &output, password.as_deref())
+        }
+        Commands::SignTool { file, signtool, cert, password, timestamp, hash, dual } => {
+            signer.sign_with_signtool(&file, signtool.as_deref(), &cert, &password, timestamp.as_deref(), &hash, dual)
         }
     };
 
